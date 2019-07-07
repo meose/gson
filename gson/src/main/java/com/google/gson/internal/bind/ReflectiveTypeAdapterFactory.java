@@ -33,6 +33,7 @@ import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import com.google.gson.stream.JsonWriter;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -43,6 +44,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Type adapter that reflects over the fields and methods of a class.
@@ -119,87 +121,69 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
     if (mapped == null) mapped = context.getAdapter(fieldType);
 
     final TypeAdapter<?> typeAdapter = mapped;
-    return new ReflectiveTypeAdapterFactory.BoundField(name, serialize, deserialize) {
+
+    String fieldName = field.getName();
+    String getterPrefix = field.getType() == boolean.class || field.getType() == Boolean.class ? "is" : "get";
+    String getterName = getterPrefix + "(.*)" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
+    String setterName = "set(.*)" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
+
+    Pattern getterPattern = Pattern.compile(getterName);
+    Pattern setterPattern = Pattern.compile(setterName);
+
+    List<Method> getters = new ArrayList<>();
+    List<Method> setters = new ArrayList<>();
+
+    for(Method m : field.getDeclaringClass().getMethods()) {
+      if(getterPattern.matcher(m.getName()).matches()) {
+        getters.add(m);
+      } else if(setterPattern.matcher(m.getName()).matches()) {
+        setters.add(m);
+      }
+    }
+
+    return new ReflectiveTypeAdapterFactory.BoundField(name, serialize, deserialize, getters, setters) {
       @SuppressWarnings({"unchecked", "rawtypes"}) // the type adapter and field type always agree
       @Override void write(JsonWriter writer, Object value)
           throws IOException, IllegalAccessException {
-        Object fieldValue;
+          Object fieldValue;
 
-        if(context.useGetterSetter()) {
-          String fieldName = field.getName();
-          String getterPrefix = field.getType() == boolean.class || field.getType() == Boolean.class ? "is" : "get";
-          String getterName = getterPrefix + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
+          if(context.useGetterSetter()) {
+            for (Method method : getters) {
+              try {
+                fieldValue = method.invoke(value);
+              } catch (InvocationTargetException | IllegalAccessException ignored) {
+                fieldValue = field.get(value);
+              }
 
-          try {
-            Method method = value.getClass().getMethod(getterName);
-            fieldValue = method.invoke(value);
+              String getterPrefix = field.getType() == boolean.class || field.getType() == Boolean.class ? "is" : "get";
+              String name = method.getName().replaceFirst(getterPrefix, "");
+              name = name.substring(0, 1).toLowerCase() + name.substring(1);
 
-          } catch (NoSuchMethodException ignored) {
-              /*
-                Getting field via reflection if no setter method is found in the class for that field
-              */
-            fieldValue = field.get(value);
-
-          } catch (InvocationTargetException ignored) {
-              /*
-                TODO : Needs to be revisited
-                If use of getter is enabled & Gson is unable to call getter, then throw error or just use reflection?
-                Since earlier Gson version worked in all cases, using reflection to get field value for now.
-              */
-            fieldValue = field.get(value);
-          } catch (IllegalAccessException ignored) {
-              /*
-                TODO : Needs to be revisited
-                If use of getter is enabled & Gson is unable to call getter, then throw error or just use reflection?
-                Since earlier Gson version worked in all cases, using reflection to get field value for now.
-              */
-            fieldValue = field.get(value);
+              writer.name(name);
+              TypeAdapter t = jsonAdapterPresent ? typeAdapter : new TypeAdapterRuntimeTypeWrapper(context, typeAdapter, fieldType.getType());
+              t.write(writer, fieldValue);
+            }
+          } else {
+            writer.name(name);
+            TypeAdapter t = jsonAdapterPresent ? typeAdapter : new TypeAdapterRuntimeTypeWrapper(context, typeAdapter, fieldType.getType());
+            t.write(writer, field.get(value));
           }
-        } else {
-          fieldValue = field.get(value);
-        }
-
-        TypeAdapter t = jsonAdapterPresent ? typeAdapter
-            : new TypeAdapterRuntimeTypeWrapper(context, typeAdapter, fieldType.getType());
-        t.write(writer, fieldValue);
       }
       @Override void read(JsonReader reader, Object value)
           throws IOException, IllegalAccessException {
         Object fieldValue = typeAdapter.read(reader);
         if (fieldValue != null || !isPrimitive) {
           if (context.useGetterSetter()) {
-            String fieldName = field.getName();
-            String setterName = "set" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
-
-            try {
-              Method method = value.getClass().getMethod(setterName, field.getType());
-              method.invoke(value, fieldValue);
-
-            } catch (NoSuchMethodException ignored) {
-              /*
-                Setting field via reflection if no setter method is found in the class for that field
-              */
-              field.set(value, fieldValue);
-
-            } catch (InvocationTargetException ignored) {
-              /*
-                TODO : Needs to be revisited
-                If use of setter is enabled & Gson is unable to call setter, then throw error or just use reflection?
-                Since earlier Gson version worked in all cases, using reflection to set field value for now.
-              */
-              field.set(value, fieldValue);
-            } catch (IllegalAccessException ignored) {
-              /*
-                TODO : Needs to be revisited
-                If use of setter is enabled & Gson is unable to call setter, then throw error or just use reflection?
-                Since earlier Gson version worked in all cases, using reflection to set field value for now.
-              */
-              field.set(value, fieldValue);
+            for (Method method : setters) {
+              try {
+                method.invoke(value, fieldValue);
+              } catch (IllegalAccessException | InvocationTargetException ignored) {
+                field.set(value, fieldValue);
+              }
             }
           } else {
             field.set(value, fieldValue);
           }
-          field.set(value, fieldValue);
         }
       }
       @Override public boolean writeField(Object value) throws IOException, IllegalAccessException {
@@ -250,14 +234,19 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
 
   static abstract class BoundField {
     final String name;
+    final List<Method> getters;
+    final List<Method> setters;
     final boolean serialized;
     final boolean deserialized;
 
-    protected BoundField(String name, boolean serialized, boolean deserialized) {
+    protected BoundField(String name, boolean serialized, boolean deserialized, List<Method> getters, List<Method> setters) {
       this.name = name;
       this.serialized = serialized;
       this.deserialized = deserialized;
+      this.getters = getters;
+      this.setters = setters;
     }
+
     abstract boolean writeField(Object value) throws IOException, IllegalAccessException;
     abstract void write(JsonWriter writer, Object value) throws IOException, IllegalAccessException;
     abstract void read(JsonReader reader, Object value) throws IOException, IllegalAccessException;
@@ -284,8 +273,17 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
         in.beginObject();
         while (in.hasNext()) {
           String name = in.nextName();
-          BoundField field = boundFields.get(name);
-          if (field == null || !field.deserialized) {
+
+          BoundField field = boundFields.values().stream().filter(
+                  i -> i.setters.stream().anyMatch(r -> r.getName().toLowerCase().matches("set" + name.toLowerCase()))
+          ).findAny().orElse(null);
+
+          if (field == null) {
+            in.skipValue();
+            continue;
+          }
+
+          if (!field.deserialized) {
             in.skipValue();
           } else {
             field.read(in, instance);
@@ -310,7 +308,6 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
       try {
         for (BoundField boundField : boundFields.values()) {
           if (boundField.writeField(value)) {
-            out.name(boundField.name);
             boundField.write(out, value);
           }
         }
