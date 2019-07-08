@@ -23,7 +23,7 @@ import com.google.gson.TypeAdapter;
 import com.google.gson.TypeAdapterFactory;
 import com.google.gson.annotations.JsonAdapter;
 import com.google.gson.annotations.JsonConnectTo;
-import com.google.gson.annotations.JsonModelConvertation;
+import com.google.gson.annotations.JsonUseMethods;
 import com.google.gson.annotations.SerializedName;
 import com.google.gson.internal.$Gson$Types;
 import com.google.gson.internal.ConstructorConstructor;
@@ -42,16 +42,11 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
-import java.lang.reflect.TypeVariable;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Level;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * Type adapter that reflects over the fields and methods of a class.
@@ -143,11 +138,11 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
     final TypeAdapter<?> typeAdapter = mapped;
 
     Class<?> aclass = field.getDeclaringClass();
-    JsonModelConvertation jsonModelConvertation = aclass.getAnnotation(JsonModelConvertation.class);
+    JsonUseMethods jsonUseMethods = aclass.getAnnotation(JsonUseMethods.class);
 
     List<Method> getters = new ArrayList<>();
     List<Method> setters = new ArrayList<>();
-    boolean isUsingMethods = jsonModelConvertation != null;
+    boolean isUsingMethods = jsonUseMethods != null;
 
     if (isUsingMethods) {
       for(Method m : field.getDeclaringClass().getMethods()) {
