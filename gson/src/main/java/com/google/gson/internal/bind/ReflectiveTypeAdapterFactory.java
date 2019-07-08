@@ -22,6 +22,8 @@ import com.google.gson.JsonSyntaxException;
 import com.google.gson.TypeAdapter;
 import com.google.gson.TypeAdapterFactory;
 import com.google.gson.annotations.JsonAdapter;
+import com.google.gson.annotations.JsonConnectTo;
+import com.google.gson.annotations.JsonModelConvertation;
 import com.google.gson.annotations.SerializedName;
 import com.google.gson.internal.$Gson$Types;
 import com.google.gson.internal.ConstructorConstructor;
@@ -38,13 +40,18 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Type adapter that reflects over the fields and methods of a class.
@@ -106,6 +113,19 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
     return new Adapter<T>(constructor, getBoundFields(gson, type, raw));
   }
 
+  private static boolean isGetter(Method method) {
+    if (Modifier.isPublic(method.getModifiers()) && method.getParameterTypes().length == 0) {
+      if (method.getName().matches("^get[A-Z].*") && !method.getReturnType().equals(void.class)) return true;
+      return method.getName().matches("^is[A-Z].*") && method.getReturnType().equals(boolean.class);
+    }
+    return false;
+  }
+
+  private static boolean isSetter(Method method) {
+    return Modifier.isPublic(method.getModifiers()) && method.getReturnType().equals(void.class) &&
+            method.getParameterTypes().length == 1 && method.getName().matches("^set[A-Z].*");
+  }
+
   private ReflectiveTypeAdapterFactory.BoundField createBoundField(
       final Gson context, final Field field, final String name,
       final TypeToken<?> fieldType, boolean serialize, boolean deserialize) {
@@ -122,44 +142,53 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
 
     final TypeAdapter<?> typeAdapter = mapped;
 
-    String fieldName = field.getName();
-    String getterPrefix = field.getType() == boolean.class || field.getType() == Boolean.class ? "is" : "get";
-    String getterName = getterPrefix + "(.*)" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
-    String setterName = "set(.*)" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
-
-    Pattern getterPattern = Pattern.compile(getterName);
-    Pattern setterPattern = Pattern.compile(setterName);
+    Class<?> aclass = field.getDeclaringClass();
+    JsonModelConvertation jsonModelConvertation = aclass.getAnnotation(JsonModelConvertation.class);
 
     List<Method> getters = new ArrayList<>();
     List<Method> setters = new ArrayList<>();
+    boolean isUsingMethods = jsonModelConvertation != null;
 
-    for(Method m : field.getDeclaringClass().getMethods()) {
-      if(getterPattern.matcher(m.getName()).matches()) {
-        getters.add(m);
-      } else if(setterPattern.matcher(m.getName()).matches()) {
-        setters.add(m);
+    if (isUsingMethods) {
+      for(Method m : field.getDeclaringClass().getMethods()) {
+        JsonConnectTo jsonConnectToAnnotation = m.getAnnotation(JsonConnectTo.class);
+        if (jsonConnectToAnnotation == null) {
+          continue;
+        }
+
+        String targetFieldName = jsonConnectToAnnotation.targetField();
+        if (!field.getName().equals(targetFieldName)) {
+          continue;
+        }
+
+        if (isGetter(m)) {
+          getters.add(m);
+        } else if (isSetter(m)) {
+          setters.add(m);
+        }
       }
     }
 
-    return new ReflectiveTypeAdapterFactory.BoundField(name, serialize, deserialize, getters, setters) {
+    return new ReflectiveTypeAdapterFactory.BoundField(name, serialize, deserialize, getters, setters, isUsingMethods) {
       @SuppressWarnings({"unchecked", "rawtypes"}) // the type adapter and field type always agree
       @Override void write(JsonWriter writer, Object value)
           throws IOException, IllegalAccessException {
           Object fieldValue;
 
-          if(context.useGetterSetter()) {
-            for (Method method : getters) {
+          if (isUsingMethods) {
+            for (Method m : getters) {
+              String rawName = getRawName(m);
+              if (rawName == null) {
+                continue;
+              }
+
               try {
-                fieldValue = method.invoke(value);
+                fieldValue = m.invoke(value);
               } catch (InvocationTargetException | IllegalAccessException ignored) {
                 fieldValue = field.get(value);
               }
 
-              String getterPrefix = field.getType() == boolean.class || field.getType() == Boolean.class ? "is" : "get";
-              String name = method.getName().replaceFirst(getterPrefix, "");
-              name = name.substring(0, 1).toLowerCase() + name.substring(1);
-
-              writer.name(name);
+              writer.name(rawName);
               TypeAdapter t = jsonAdapterPresent ? typeAdapter : new TypeAdapterRuntimeTypeWrapper(context, typeAdapter, fieldType.getType());
               t.write(writer, fieldValue);
             }
@@ -169,14 +198,19 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
             t.write(writer, field.get(value));
           }
       }
-      @Override void read(JsonReader reader, Object value)
+
+      @Override void read(JsonReader reader, Object value, String name)
           throws IOException, IllegalAccessException {
         Object fieldValue = typeAdapter.read(reader);
         if (fieldValue != null || !isPrimitive) {
-          if (context.useGetterSetter()) {
-            for (Method method : setters) {
+          if (isUsingMethods) {
+            for (Method m : setters) {
+              if (!name.equals(getRawName(m))) {
+                continue;
+              }
+
               try {
-                method.invoke(value, fieldValue);
+                m.invoke(value, fieldValue);
               } catch (IllegalAccessException | InvocationTargetException ignored) {
                 field.set(value, fieldValue);
               }
@@ -192,6 +226,16 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
         return fieldValue != value; // avoid recursion for example for Throwable.cause
       }
     };
+  }
+
+  private static String getRawName(Method m) {
+    JsonConnectTo jsonConnectToAnnotation = m.getAnnotation(JsonConnectTo.class);
+    if (jsonConnectToAnnotation == null) {
+      return null;
+    }
+
+    String rawName = jsonConnectToAnnotation.rawName();
+    return rawName.isEmpty() ? jsonConnectToAnnotation.targetField() : rawName;
   }
 
   private Map<String, BoundField> getBoundFields(Gson context, TypeToken<?> type, Class<?> raw) {
@@ -238,18 +282,21 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
     final List<Method> setters;
     final boolean serialized;
     final boolean deserialized;
+    final boolean isUsingMethods;
 
-    protected BoundField(String name, boolean serialized, boolean deserialized, List<Method> getters, List<Method> setters) {
+    protected BoundField(String name, boolean serialized, boolean deserialized, List<Method> getters,
+                         List<Method> setters, boolean isUsingMethods) {
       this.name = name;
       this.serialized = serialized;
       this.deserialized = deserialized;
       this.getters = getters;
       this.setters = setters;
+      this.isUsingMethods = isUsingMethods;
     }
 
     abstract boolean writeField(Object value) throws IOException, IllegalAccessException;
     abstract void write(JsonWriter writer, Object value) throws IOException, IllegalAccessException;
-    abstract void read(JsonReader reader, Object value) throws IOException, IllegalAccessException;
+    abstract void read(JsonReader reader, Object value, String name) throws IOException, IllegalAccessException;
   }
 
   public static final class Adapter<T> extends TypeAdapter<T> {
@@ -274,19 +321,22 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
         while (in.hasNext()) {
           String name = in.nextName();
 
-          BoundField field = boundFields.values().stream().filter(
-                  i -> i.setters.stream().anyMatch(r -> r.getName().toLowerCase().matches("set" + name.toLowerCase()))
-          ).findAny().orElse(null);
+          BoundField field = boundFields.values().stream().filter(bf -> {
+            if (!bf.isUsingMethods) {
+              return bf.name.equals(name);
+            }
 
-          if (field == null) {
-            in.skipValue();
-            continue;
-          }
+            for (Method m : bf.setters) {
+              if (name.equals(getRawName(m))) return true;
+            }
 
-          if (!field.deserialized) {
+            return false;
+          }).findAny().orElse(null);
+
+          if (field == null || !field.deserialized) {
             in.skipValue();
           } else {
-            field.read(in, instance);
+            field.read(in, instance, name);
           }
         }
       } catch (IllegalStateException e) {
