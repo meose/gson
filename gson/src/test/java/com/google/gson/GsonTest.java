@@ -49,13 +49,12 @@ public final class GsonTest extends TestCase {
         new HashMap<Type, InstanceCreator<?>>(), true, false, true, false,
         true, true, false, LongSerializationPolicy.DEFAULT, null, DateFormat.DEFAULT,
         DateFormat.DEFAULT, new ArrayList<TypeAdapterFactory>(),
-        new ArrayList<TypeAdapterFactory>(), new ArrayList<TypeAdapterFactory>(), true);
+        new ArrayList<TypeAdapterFactory>(), new ArrayList<TypeAdapterFactory>());
 
     assertEquals(CUSTOM_EXCLUDER, gson.excluder());
     assertEquals(CUSTOM_FIELD_NAMING_STRATEGY, gson.fieldNamingStrategy());
     assertEquals(true, gson.serializeNulls());
     assertEquals(false, gson.htmlSafe());
-    assertEquals(true, gson.useGetterSetter());
   }
 
   public void testClonedTypeAdapterFactoryListsAreIndependent() {
@@ -63,7 +62,7 @@ public final class GsonTest extends TestCase {
         new HashMap<Type, InstanceCreator<?>>(), true, false, true, false,
         true, true, false, LongSerializationPolicy.DEFAULT, null, DateFormat.DEFAULT,
         DateFormat.DEFAULT, new ArrayList<TypeAdapterFactory>(),
-        new ArrayList<TypeAdapterFactory>(), new ArrayList<TypeAdapterFactory>(), true);
+        new ArrayList<TypeAdapterFactory>(), new ArrayList<TypeAdapterFactory>());
 
     Gson clone = original.newBuilder()
         .registerTypeAdapter(Object.class, new TestTypeAdapter())
