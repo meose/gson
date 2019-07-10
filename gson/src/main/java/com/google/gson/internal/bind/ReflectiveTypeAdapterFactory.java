@@ -23,7 +23,7 @@ import com.google.gson.TypeAdapter;
 import com.google.gson.TypeAdapterFactory;
 import com.google.gson.annotations.JsonAdapter;
 import com.google.gson.annotations.JsonConnectTo;
-import com.google.gson.annotations.JsonUseMethods;
+import com.google.gson.annotations.JsonSpecialRules;
 import com.google.gson.annotations.SerializedName;
 import com.google.gson.internal.$Gson$Types;
 import com.google.gson.internal.ConstructorConstructor;
@@ -138,11 +138,11 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
     final TypeAdapter<?> typeAdapter = mapped;
 
     Class<?> aclass = field.getDeclaringClass();
-    JsonUseMethods jsonUseMethods = aclass.getAnnotation(JsonUseMethods.class);
+    JsonSpecialRules jsonSpecialRules = aclass.getAnnotation(JsonSpecialRules.class);
 
     List<Method> getters = new ArrayList<>();
     List<Method> setters = new ArrayList<>();
-    boolean isUsingMethods = jsonUseMethods != null;
+    boolean isUsingMethods = jsonSpecialRules != null;
 
     if (isUsingMethods) {
       for(Method m : field.getDeclaringClass().getMethods()) {
